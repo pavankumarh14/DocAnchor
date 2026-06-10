@@ -15,14 +15,14 @@ RUN pip install --no-cache-dir --upgrade pip
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy backend
+# Copy everything needed
 COPY backend/ ./backend/
-WORKDIR /app/backend
+COPY sample_repo/ ./sample_repo/
+COPY demo.py ./
 
-# Copy built frontend
-COPY --from=frontend-builder /app/frontend/dist /app/backend/frontend/dist
+WORKDIR /app/backend
+ENV PYTHONPATH=/app/backend
 
 EXPOSE 8000
 
-ENV PYTHONPATH=/app/backend
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

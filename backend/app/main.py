@@ -24,7 +24,7 @@ app.add_middleware(
 app.include_router(router, prefix="/api")
 
 # Serve frontend static files
-FRONTEND_DIST = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
+FRONTEND_DIST = "/app/frontend/dist"
 if os.path.exists(FRONTEND_DIST):
     app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
 
