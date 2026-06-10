@@ -1,8 +1,5 @@
 #!/bin/bash
 set -e
-# Upgrade pip first to get latest wheel support
-pip install --upgrade pip setuptools wheel
-# Install pydantic with binary wheel
-pip install --prefer-binary pydantic-core==2.27.2 || pip install pydantic
-# Install remaining dependencies
+# Install without pydantic-core Rust dependency
+pip install --prefer-binary --no-build-isolation pydantic==2.6.4 || pip install --prefer-binary pydantic
 pip install --prefer-binary fastapi uvicorn httpx tree-sitter tree-sitter-python qdrant-client numpy aiofiles python-dotenv
