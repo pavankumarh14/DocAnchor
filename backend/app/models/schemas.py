@@ -13,7 +13,7 @@ from enum import Enum
 
 class FileDiff(BaseModel):
     path: str
-    patch: str          # unified diff text
+    patch: str
     additions: int
     deletions: int
 
@@ -34,7 +34,7 @@ class CommitPayload(BaseModel):
 
 class CodeSymbol(BaseModel):
     name: str
-    kind: str           # function | class | method | endpoint
+    kind: str
     file_path: str
     start_line: int
     end_line: int
@@ -51,14 +51,14 @@ class DocBlock(BaseModel):
     doc_path: str
     section_heading: str
     content: str
-    symbols: List[str]  # symbol names this block references
+    symbols: List[str]
     read_count: int = 0
     last_updated: datetime
 
 
 class DocPRPreview(BaseModel):
-    """Local mock PR payload for manual review (no external GitHub links)."""
     pr_number: int
+    pr_url: Optional[str] = None
     repo: str
     title: str
     body: str
@@ -77,12 +77,13 @@ class DriftResult(BaseModel):
     doc_block_id: str
     doc_path: str
     section_heading: str
-    drift_score: float          # 0–100
+    drift_score: float
     changed_symbols: List[str]
     original_content: str
     suggested_rewrite: Optional[str] = None
-    pr_url: Optional[str] = None          # deprecated; kept for API compat
+    pr_url: Optional[str] = None
     pr_preview: Optional[DocPRPreview] = None
+    confidence_score: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
@@ -91,12 +92,12 @@ class DriftResult(BaseModel):
 
 class RepoHealth(BaseModel):
     repo: str
-    freshness_score: float      # 0–100 (100 = fully fresh)
+    freshness_score: float
     total_doc_blocks: int
-    stale_blocks: int           # drift_score > 40
-    critical_blocks: int        # drift_score > 70
+    stale_blocks: int
+    critical_blocks: int
     last_analyzed: datetime
-    analyzed_files: List[str] = []   # markdown files scanned
+    analyzed_files: List[str] = []
 
 
 class DashboardMetrics(BaseModel):
@@ -115,7 +116,7 @@ class PRRequest(BaseModel):
     head_branch: str
     title: str
     body: str
-    file_changes: Dict[str, str]    # path -> new content
+    file_changes: Dict[str, str]
 
 
 class PRResponse(BaseModel):

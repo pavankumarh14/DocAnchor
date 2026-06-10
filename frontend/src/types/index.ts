@@ -17,6 +17,7 @@ export interface CommitPayload {
 
 export interface DocPRPreview {
   pr_number: number;
+  pr_url?: string | null;
   repo: string;
   title: string;
   body: string;
@@ -82,7 +83,7 @@ export interface MockCommit {
 }
 
 export interface GithubCommit {
-  sha: string;        // short (7-char)
+  sha: string;
   full_sha: string;
   author: string;
   message: string;
