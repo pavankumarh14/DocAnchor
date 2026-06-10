@@ -4,6 +4,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 from app.api.routes import router
 
@@ -26,7 +27,11 @@ app.include_router(router, prefix="/api")
 # Serve frontend static files
 FRONTEND_DIST = "/app/frontend/dist"
 if os.path.exists(FRONTEND_DIST):
-    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
+    app.mount("/static", StaticFiles(directory=FRONTEND_DIST), name="static")
+    
+    @app.get("/")
+    async def serve_frontend():
+        return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
 
 @app.get("/health")
 async def health():
