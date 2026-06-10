@@ -1,13 +1,12 @@
-# DocAnchor Backend - Render Deployment
-
 services:
   - type: web
-    name: docanchor-backend
-    runtime: python
+    name: docanchor
+    env: python
     region: oregon
     plan: free
-    rootDir: backend
-    buildCommand: pip install -r requirements.txt
+    buildCommand: |
+      pip install -r requirements.txt
+      # Frontend must be pre-built or use separate static service
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: USE_MOCKS
