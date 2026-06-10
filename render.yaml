@@ -1,11 +1,12 @@
 services:
   - type: web
     name: docanchor
-    env: python
+    env: docker
     region: oregon
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    dockerfilePath: ./Dockerfile
+    buildCommand: ""
+    startCommand: ""
     envVars:
       - key: USE_MOCKS
         value: "true"
@@ -19,5 +20,3 @@ services:
         fromSecret: SLACK_WEBHOOK_URL
       - key: QDRANT_IN_MEMORY
         value: "true"
-      - key: PYTHON_VERSION
-        value: "3.11"
