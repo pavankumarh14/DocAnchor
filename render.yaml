@@ -1,0 +1,27 @@
+# DocAnchor Backend - Render Deployment
+# Mock mode enabled by default (all credentials optional)
+
+services:
+  - type: web
+    name: docanchor-backend
+    runtime: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: USE_MOCKS
+        value: "true"
+      # Optional - set these secrets in Render dashboard to enable real integrations
+      # - key: LLM_API_KEY
+      #   fromSecret: LLM_API_KEY
+      # - key: GITHUB_TOKEN
+      #   fromSecret: GITHUB_TOKEN
+      # - key: WEBHOOK_SECRET
+      #   fromSecret: WEBHOOK_SECRET
+      # - key: SLACK_WEBHOOK_URL
+      #   fromSecret: SLACK_WEBHOOK_URL
+      - key: QDRANT_IN_MEMORY
+        value: "true"
+      - key: HOST
+        value: "0.0.0.0"

@@ -1,0 +1,349 @@
+"""
+Main analysis worker.
+Orchestrates the full DocAnchor pipeline:
+  1. Parse changed symbols from diff (real tree-sitter, or diff-text fallback)
+  2. Load + index doc blocks (real Qdrant + embeddings)
+  3. Score drift (real algorithm)
+  4. Request LLM rewrites (mock or real)
+  5. Open doc PR (real or local preview)
+  6. Auto-merge if conditions met
+  7. Send notifications if needed
+  8. Return DashboardMetrics
+"""
+
+from __future__ import annotations
+import asyncio
+import difflib
+import logging
+import os
+import sqlite3
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Tuple
+
+from app.core.config import settings
+from app.models.schemas import (
+    CommitPayload,
+    AnalysisJob,
+    DashboardMetrics,
+    DriftResult,
+    RepoHealth,
+    PRRequest,
+    JobStatus,
+    DocPRPreview,
+    CodeSymbol,
+)
+from app.services.llm_service import openai_llm_rewrite
+from app.services.symbol_extractor import (
+    extract_changed_symbols,
+    extract_symbols_from_directory,
+    extract_symbols_from_diff_text,
+)
+from app.services.doc_parser import parse_all_docs, parse_docs_from_dict
+from app.services.vector_index import index_doc_blocks, build_symbol_doc_map
+from app.services.drift_scorer import score_all_blocks, compute_repo_freshness
+from app.services.auto_merge import score_rewrite_confidence, should_auto_merge, merge_pr
+from app.services.notifier import notify_drift_detected
+
+logger = logging.getLogger(__name__)
+
+DB_PATH = "data/jobs.db"
+
+
+def _init_db() -> sqlite3.Connection:
+    """Initialize SQLite database for job persistence."""
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS jobs (
+            id TEXT PRIMARY KEY,
+            data TEXT,
+            created_at TEXT
+        )
+    """)
+    return conn
+
+
+_db_conn: Optional[sqlite3.Connection] = None
+
+
+def _get_db() -> sqlite3.Connection:
+    global _db_conn
+    if _db_conn is None:
+        _db_conn = _init_db()
+    return _db_conn
+
+
+def _build_doc_diff(doc_path: str, original: str, revised: str) -> Tuple[str, int, int]:
+    """Unified diff for one doc section (local PR preview, not GitHub)."""
+    diff_lines = list(
+        difflib.unified_diff(
+            original.splitlines(),
+            revised.splitlines(),
+            fromfile=f"a/{doc_path}",
+            tofile=f"b/{doc_path}",
+            lineterm="",
+        )
+    )
+    diff_text = "\n".join(diff_lines) if diff_lines else (
+        f"--- a/{doc_path}\n+++ b/{doc_path}\n@@ section @@\n{revised}"
+    )
+    additions = sum(
+        1 for ln in diff_lines if ln.startswith("+") and not ln.startswith("+++")
+    )
+    deletions = sum(
+        1 for ln in diff_lines if ln.startswith("-") and not ln.startswith("---")
+    )
+    return diff_text, additions, deletions
+
+
+def get_job(job_id: str) -> Optional[AnalysisJob]:
+    """Load a job by ID from SQLite."""
+    try:
+        conn = _get_db()
+        cursor = conn.execute("SELECT data FROM jobs WHERE id = ?", (job_id,))
+        row = cursor.fetchone()
+        if row:
+            from app.models.schemas import AnalysisJob
+            return AnalysisJob.model_validate_json(row[0])
+        return None
+    except Exception:
+        return None
+
+
+def list_jobs() -> List[AnalysisJob]:
+    """Return all jobs newest-first from SQLite."""
+    try:
+        conn = _get_db()
+        cursor = conn.execute("SELECT data FROM jobs ORDER BY created_at DESC")
+        from app.models.schemas import AnalysisJob
+        return [AnalysisJob.model_validate_json(row[0]) for row in cursor.fetchall()]
+    except Exception:
+        return []
+
+
+def _save_job(job: AnalysisJob) -> None:
+    """Persist a job to SQLite."""
+    try:
+        conn = _get_db()
+        conn.execute(
+            "INSERT OR REPLACE INTO jobs (id, data, created_at) VALUES (?, ?, ?)",
+            (job.job_id, job.model_dump_json(), job.created_at.isoformat()),
+        )
+        conn.commit()
+    except Exception as exc:
+        logger.warning("Failed to save job to DB: %s", exc)
+
+
+async def run_analysis(
+    job: AnalysisJob,
+    commit: CommitPayload,
+    llm_api_key: Optional[str] = None,
+    github_token: Optional[str] = None,
+    markdown_docs: Optional[Dict[str, str]] = None,
+) -> None:
+    """Run the full DocAnchor pipeline for a commit."""
+    job.status = JobStatus.RUNNING
+    _save_job(job)
+    is_real_repo = markdown_docs is not None
+    logger.info(
+        "Starting analysis job=%s commit=%s real_repo=%s real_llm=%s real_github=%s",
+        job.job_id,
+        commit.commit_sha,
+        is_real_repo,
+        bool(llm_api_key or settings.LLM_API_KEY),
+        bool(github_token or settings.GITHUB_TOKEN),
+    )
+
+    try:
+        changed_symbol_names: List[str] = []
+        for file_diff in commit.changed_files:
+            if is_real_repo:
+                touched = extract_symbols_from_diff_text(file_diff.patch)
+            else:
+                full_path = os.path.join(settings.SAMPLE_REPO_PATH, file_diff.path)
+                if os.path.exists(full_path) and full_path.endswith(".py"):
+                    touched = extract_changed_symbols(file_diff.patch, full_path)
+                else:
+                    touched = extract_symbols_from_diff_text(file_diff.patch)
+            changed_symbol_names.extend(touched)
+
+        changed_symbol_names = list(set(changed_symbol_names))
+        logger.info("Changed symbols: %s", changed_symbol_names)
+
+        if is_real_repo:
+            all_symbols: List[CodeSymbol] = []
+            for name in changed_symbol_names:
+                all_symbols.append(CodeSymbol(
+                    name=name, kind="function", file_path="<github>",
+                    start_line=1, end_line=1,
+                ))
+        else:
+            repo_src = os.path.join(settings.SAMPLE_REPO_PATH, "src")
+            all_symbols = extract_symbols_from_directory(repo_src)
+
+        read_counts = {}
+        if settings.USE_MOCKS and not is_real_repo:
+            from app.mocks.mock_interfaces import get_mock_read_counts
+            read_counts = get_mock_read_counts()
+
+        if is_real_repo:
+            doc_blocks = parse_docs_from_dict(markdown_docs, read_counts)
+            analyzed_files = list(markdown_docs.keys())
+        else:
+            docs_dir = os.path.join(settings.SAMPLE_REPO_PATH, "docs")
+            doc_blocks = parse_all_docs(docs_dir, read_counts)
+            analyzed_files = ["sample_repo/docs/api_reference.md"]
+
+        if not doc_blocks:
+            logger.warning("No doc blocks found for job=%s", job.job_id)
+
+        logger.info("Parsed %d doc blocks", len(doc_blocks))
+
+        build_symbol_doc_map(doc_blocks, all_symbols)
+        index_doc_blocks(doc_blocks)
+
+        drift_results = score_all_blocks(
+            doc_blocks, changed_symbol_names, commit.timestamp
+        )
+
+        stale = [r for r in drift_results if r.drift_score > 30]
+        logger.info("Requesting rewrites for %d stale blocks", len(stale))
+
+        diff_context = "\n\n".join(
+            f"File: {fd.path}\n{fd.patch}" for fd in commit.changed_files
+        )
+
+        api_key = llm_api_key.strip() if llm_api_key else settings.LLM_API_KEY
+        use_real_llm = bool(api_key)
+
+        if use_real_llm:
+            logger.info("Using real LLM for rewrites")
+            rewrite_fn = lambda heading, original, diff: openai_llm_rewrite(
+                heading, original, diff, api_key, settings.LLM_MODEL,
+            )
+        else:
+            from app.mocks.mock_interfaces import mock_llm_rewrite
+            logger.info("Using mock LLM rewrites")
+            rewrite_fn = mock_llm_rewrite
+
+        rewrite_tasks = [
+            rewrite_fn(r.section_heading, r.original_content, diff_context)
+            for r in stale
+        ]
+        rewrites = await asyncio.gather(*rewrite_tasks)
+        for result, rewrite in zip(stale, rewrites):
+            result.suggested_rewrite = rewrite
+
+        use_real_github = bool(github_token or settings.GITHUB_TOKEN)
+        token = github_token or settings.GITHUB_TOKEN
+
+        if stale:
+            if use_real_github:
+                from app.services.github_service import choose_github_pr
+                try:
+                    create_pr_fn = choose_github_pr
+                    logger.info("Using real GitHub PR creation")
+                except Exception:
+                    from app.mocks.mock_interfaces import mock_create_pr
+                    create_pr_fn = mock_create_pr
+                    logger.info("Falling back to mock PR")
+            else:
+                from app.mocks.mock_interfaces import mock_create_pr
+                create_pr_fn = mock_create_pr
+                logger.info("Using mock PR (no GitHub token)")
+
+            file_changes: dict[str, str] = {
+                r.doc_path: r.suggested_rewrite
+                for r in stale
+                if r.suggested_rewrite
+            }
+
+            pr_req = PRRequest(
+                repo=commit.repo,
+                base_branch=commit.branch,
+                head_branch=f"docanchor/fix-{commit.commit_sha[:7]}",
+                title=f"docs: fix drift after {commit.commit_sha[:7]}",
+                body=f"Auto-generated by DocAnchor.\n\n{len(stale)} stale blocks updated.",
+                file_changes=file_changes,
+            )
+            pr_resp = await create_pr_fn(pr_req, token)
+
+            for r in stale:
+                if not r.suggested_rewrite:
+                    continue
+                diff_text, adds, dels = _build_doc_diff(
+                    r.doc_path, r.original_content, r.suggested_rewrite
+                )
+                r.pr_preview = DocPRPreview(
+                    pr_number=pr_resp.pr_number,
+                    repo=commit.repo,
+                    title=pr_req.title,
+                    body=(
+                        f"{pr_req.body}\n\n"
+                        f"### Section\n{r.section_heading}\n\n"
+                        f"Doc path: `{r.doc_path}`"
+                    ),
+                    base_branch=pr_req.base_branch,
+                    head_branch=pr_resp.head_branch,
+                    status=pr_resp.status,
+                    author="docanchor-bot[bot]",
+                    doc_path=r.doc_path,
+                    section_heading=r.section_heading,
+                    diff=diff_text,
+                    additions=adds,
+                    deletions=dels,
+                )
+
+            for r in stale:
+                if r.suggested_rewrite:
+                    confidence = await score_rewrite_confidence(
+                        r.original_content, r.suggested_rewrite, diff_context
+                    )
+                    r.confidence_score = confidence
+                    if use_real_github and token:
+                        try:
+                            if await should_auto_merge(r, pr_resp.pr_number, commit.repo, token, confidence):
+                                await merge_pr(commit.repo, pr_resp.pr_number, token)
+                                logger.info("Auto-merged PR for %s", r.doc_path)
+                        except Exception as exc:
+                            logger.warning("Auto-merge failed: %s", exc)
+
+        freshness = compute_repo_freshness(drift_results)
+        stale_count = sum(1 for r in drift_results if r.drift_score > 40)
+        critical_count = sum(1 for r in drift_results if r.drift_score > 70)
+
+        repo_health = RepoHealth(
+            repo=commit.repo,
+            freshness_score=freshness,
+            total_doc_blocks=len(doc_blocks),
+            stale_blocks=stale_count,
+            critical_blocks=critical_count,
+            last_analyzed=datetime.now(timezone.utc),
+            analyzed_files=analyzed_files,
+        )
+
+        job.result = DashboardMetrics(
+            repo_health=repo_health,
+            drift_results=drift_results,
+            recent_commits=[commit],
+        )
+        job.status = JobStatus.DONE
+        job.completed_at = datetime.now(timezone.utc)
+        _save_job(job)
+        logger.info(
+            "Analysis done job=%s freshness=%.1f stale=%d",
+            job.job_id, freshness, stale_count,
+        )
+
+        if settings.SLACK_WEBHOOK_URL and stale_count > 0:
+            try:
+                await notify_drift_detected(repo_health, drift_results)
+            except Exception as exc:
+                logger.warning("Notification failed: %s", exc)
+
+    except Exception as exc:
+        logger.exception("Analysis failed job=%s", job.job_id)
+        job.status = JobStatus.FAILED
+        job.error = str(exc)
+        job.completed_at = datetime.now(timezone.utc)
+        _save_job(job)
