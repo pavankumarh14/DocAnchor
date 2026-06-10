@@ -31,61 +31,60 @@ from app.core.config import settings
 # 1. Git Webhook + Diff Mock
 # ============================================================
 
-# Pre-authored realistic diffs for our sample repo
 _MOCK_DIFFS: List[Dict] = [
     {
         "path": "src/payments.py",
         "additions": 8,
         "deletions": 3,
         "patch": textwrap.dedent("""\
-            @@ -18,7 +18,12 @@ def process_payment(
-                 idempotency_key: Optional[str] = None,
-             ) -> dict:
-            -    Validates the amount, selects the correct payment gateway,
-            -    and returns a transaction receipt.
-            +    Validates the amount, applies regional tax rules,
-            +    selects the correct payment gateway based on currency,
-            +    and returns a PCI-compliant transaction receipt.
-            +
-            +    New: supports multi-currency routing via currency param.
-             
-                 Args:
-                     user_id: The ID of the user to charge.
-                     amount: Decimal amount to charge (must be > 0).
-            -        currency: ISO 4217 currency code (default USD).
-            +        currency: ISO 4217 currency code. Routing varies by region.
-            +        tax_inclusive: If True, amount includes tax (default False).
-        """),
+@@ -15,10 +15,15 @@ def process_payment(
+     idempotency_key: Optional[str] = None,
+ ) -> dict:
+-    Validates the amount, selects the correct payment gateway,
+-    and returns a transaction receipt.
++    Validates the amount, applies regional tax rules,
++    selects the correct payment gateway based on currency,
++    and returns a PCI-compliant transaction receipt.
++
++    New: supports multi-currency routing via currency param.
+    
+     Args:
+         user_id: The ID of the user to charge.
+         amount: Decimal amount to charge (must be > 0).
+-        currency: ISO 4217 currency code (default USD).
++        currency: ISO 4217 currency code. Routing varies by region.
++        tax_inclusive: If True, amount includes tax (default False).
+"""),
     },
     {
         "path": "src/users.py",
         "additions": 5,
         "deletions": 2,
         "patch": textwrap.dedent("""\
-            @@ -30,6 +30,9 @@ def deactivate_user(user_id: str, reason: Optional[str] = None) -> bool:
-            -    Soft-delete a user account.
-            +    Hard-delete a user account and purge PII from all tables.
-            +    This action is irreversible and triggers a GDPR erasure event.
-             
-                 Args:
-                     user_id: User to deactivate.
-            -        reason: Optional audit-log reason.
-            +        reason: Mandatory audit-log reason (now required for compliance).
-            +        notify_user: If True, sends a deletion confirmation email (default True).
-        """),
+@@ -28,9 +28,11 @@ def deactivate_user(user_id: str, reason: Optional[str] = None) -> bool:
+-    Soft-delete a user account.
++    Hard-delete a user account and purge PII from all tables.
++    This action is irreversible and triggers a GDPR erasure event.
+    
+     Args:
+         user_id: User to deactivate.
+-        reason: Optional audit-log reason.
++        reason: Mandatory audit-log reason (now required for compliance).
++        notify_user: If True, sends a deletion confirmation email (default True).
+"""),
     },
     {
         "path": "src/notifications.py",
         "additions": 4,
         "deletions": 1,
         "patch": textwrap.dedent("""\
-            @@ -22,5 +22,8 @@ def send_notification(
-             ) -> dict:
-            -    Sends a message to a single user. Supports email, sms, push, and webhook channels.
-            +    Sends a message to a single user.
-            +    Supported channels: email, sms, push, slack (webhook removed in v2).
-            +    Rate limit: 100/min per user on normal priority, unlimited on high.
-        """),
+@@ -20,7 +20,10 @@ def send_notification(
+ ) -> dict:
+-    Sends a message to a single user. Supports email, sms, push, and webhook channels.
++    Sends a message to a single user.
++    Supported channels: email, sms, push, slack (webhook removed in v2).
++    Rate limit: 100/min per user on normal priority, unlimited on high.
+"""),
     },
 ]
 
@@ -155,7 +154,6 @@ def list_mock_commits() -> List[CommitPayload]:
 # 2. LLM Doc Rewrite Mock
 # ============================================================
 
-# Carefully hand-authored corrections that match the diff intent
 _MOCK_REWRITES: Dict[str, str] = {
     "### process_payment": textwrap.dedent("""\
         Charges a user for a given amount, applying regional tax rules where applicable.
@@ -166,7 +164,7 @@ _MOCK_REWRITES: Dict[str, str] = {
         - `user_id` – The ID of the user to charge
         - `amount` – Decimal amount (must be positive)
         - `currency` – ISO 4217 code; routing varies by region (default: USD)
-        - `tax_inclusive` – If `True`, the amount already includes tax (default: `False`)
+        - `tax_inclusive` – If True, the amount already includes tax (default: False)
         - `idempotency_key` – Optional key to prevent double charges
 
         **Returns:** A receipt dict with `transaction_id`, `status`, `amount`, `currency`.
@@ -180,7 +178,7 @@ _MOCK_REWRITES: Dict[str, str] = {
         **Parameters:**
         - `user_id` – User to delete
         - `reason` – Mandatory audit-log reason (required for compliance)
-        - `notify_user` – If `True`, sends a deletion confirmation email (default: `True`)
+        - `notify_user` – If True, sends a deletion confirmation email (default: True)
 
         Returns `True` if the account was deleted successfully.
     """),
@@ -216,7 +214,7 @@ _MOCK_REWRITES: Dict[str, str] = {
         }
         ```
         *Note: `webhook` channel removed in v2. Use `slack` instead.*
-        Rate limit: 100/min per user at `normal` priority, unlimited at `high`.
+        Rate limit: 100/min per user at normal priority, unlimited at high.
     """),
 }
 
@@ -233,11 +231,7 @@ async def mock_llm_rewrite(
     original_content: str,
     diff_context: str,
 ) -> str:
-    """
-    Return a pre-authored mock rewrite for known sections,
-    or a generic placeholder for unknown ones.
-    Simulates LLM latency.
-    """
+    """Return a pre-authored mock rewrite for known sections, or a generic placeholder."""
     await asyncio.sleep(settings.MOCK_LLM_DELAY + random.uniform(0, 0.3))
     return _MOCK_REWRITES.get(section_heading, _DEFAULT_REWRITE)
 
@@ -266,7 +260,6 @@ async def mock_create_pr(request: PRRequest) -> PRResponse:
 # 4. Dashboard Read-Count Metrics Mock
 # ============================================================
 
-# Simulated page-view counts per section heading
 MOCK_READ_COUNTS: Dict[str, int] = {
     "### process_payment": 1842,
     "### refund_payment": 934,
@@ -274,7 +267,7 @@ MOCK_READ_COUNTS: Dict[str, int] = {
     "### get_payment_status": 401,
     "### create_user": 1205,
     "### get_user": 889,
-    "### deactivate_user": 2103,  # high because devs keep checking this
+    "### deactivate_user": 2103,
     "### update_user_role": 315,
     "### send_notification": 1556,
     "### send_bulk_notification": 728,
@@ -306,21 +299,11 @@ async def fetch_real_read_counts(repo: str, github_token: str) -> Dict[str, int]
 
     TODO — implement one of these approaches:
 
-    Option A — GitHub Traffic API (counts views per file path):
+    Option A — GitHub Traffic API:
         GET /repos/{owner}/{repo}/traffic/views
-        Maps file-level view counts to section headings by doc_path prefix.
-        Requires a token with the `repo` scope.
-        Reference: https://docs.github.com/en/rest/metrics/traffic
 
-    Option B — Custom analytics store (e.g. PostHog, Mixpanel, internal DB):
-        Query your analytics store for page-view counts keyed by section heading.
-        Return a dict matching the shape of MOCK_READ_COUNTS above.
+    Option B — Custom analytics store.
 
-    The returned dict must be keyed by section_heading strings
-    (e.g. "### process_payment") and map to integer view counts.
-
-    After implementing, update analysis_worker.py to call fetch_real_read_counts()
-    instead of get_mock_read_counts() when a github_token is available.
+    The returned dict must be keyed by section_heading strings.
     """
-    # ── TODO: replace the return below with a real analytics fetch ──
-    return {}  # TODO: fetch real read counts from GitHub Traffic API or analytics store
+    return {}

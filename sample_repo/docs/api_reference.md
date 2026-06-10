@@ -1,5 +1,48 @@
 # API Reference
 
+## Functions
+
+### process_payment
+
+Processes a payment for a user.
+
+**Parameters:**
+- `user_id` – The ID of the user to charge
+- `amount` – Decimal amount to charge (must be positive)
+- `currency` – ISO 4217 currency code (default USD)
+
+**Returns:** A receipt dict with `transaction_id`, `status`, and `amount`.
+
+Errors are raised as `PaymentError` if the amount is invalid or the charge is declined.
+
+---
+
+### deactivate_user
+
+Soft-deletes a user account.
+
+**Parameters:**
+- `user_id` – User to deactivate
+- `reason` – Optional audit-log reason
+
+Returns `True` if the account was deleted successfully.
+
+---
+
+### send_notification
+
+Sends a message to a single user on the specified channel.
+
+**Parameters:**
+- `user_id` – Recipient
+- `message` – Body text
+- `channel` – Delivery channel: `email`, `sms`, `push`, `webhook`
+- `subject` – Subject line (email only)
+
+Returns a dict with `notification_id`, `status`, `channel`, and `queued_at`.
+
+---
+
 ## Endpoints
 
 ### POST /payments/charge

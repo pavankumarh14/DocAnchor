@@ -6,6 +6,7 @@ No mocking – this runs locally with the tree-sitter library.
 
 from __future__ import annotations
 import os
+import re
 from typing import List, Optional
 from pathlib import Path
 
@@ -34,12 +35,10 @@ def _get_docstring(body_node: Node, source: bytes) -> Optional[str]:
             for sub in child.children:
                 if sub.type == "string":
                     raw = _node_text(sub, source).strip()
-                    # Strip triple-quote delimiters
                     for q in ('"""', "'''", '"', "'"):
                         if raw.startswith(q) and raw.endswith(q) and len(raw) > 2 * len(q):
                             return raw[len(q):-len(q)].strip()
                     return raw
-        # Stop at first non-docstring statement
         if child.type not in ("comment", "expression_statement", "string"):
             break
     return None
@@ -71,7 +70,6 @@ def _walk_node(
     if node.type in ("function_definition", "decorated_definition"):
         actual = node
         if node.type == "decorated_definition":
-            # Find the inner function/class
             for child in node.children:
                 if child.type in ("function_definition", "class_definition"):
                     actual = child
@@ -98,7 +96,6 @@ def _walk_node(
                     docstring=docstring,
                 )
             )
-            # Recurse into nested functions
             if body_node:
                 for child in body_node.children:
                     _walk_node(child, source, file_path, symbols, class_name)
@@ -122,13 +119,11 @@ def _walk_node(
             )
         )
 
-        # Walk class body for methods
         if body_node:
             for child in body_node.children:
                 _walk_node(child, source, file_path, symbols, class_name=name)
         return
 
-    # Generic recursion
     for child in node.children:
         _walk_node(child, source, file_path, symbols, class_name)
 
@@ -170,15 +165,22 @@ def extract_symbols_from_directory(directory: str) -> List[CodeSymbol]:
 
 def extract_symbols_from_diff_text(diff_patch: str) -> List[str]:
     """
-    Extract symbol names from a unified diff without needing the actual file on disk.
-    Finds Python function/class definitions in added or context lines.
-    Used for real GitHub repos where we only have the patch, not the local file.
+    Extract symbol names from a unified diff.
+    Looks for function/class definitions in hunk headers and content lines.
     """
-    import re
     symbols: List[str] = []
     for line in diff_patch.split("\n"):
+        # Extract from hunk headers (e.g., @@ -18,7 +18,12 @@ def process_payment()
+        if line.startswith("@@"):
+            m = re.search(r"def\s+([a-zA-Z_]\w*)", line)
+            if m:
+                symbols.append(m.group(1))
+            m = re.search(r"class\s+([a-zA-Z_]\w*)", line)
+            if m:
+                symbols.append(m.group(1))
+            continue
         if line.startswith("\\"):
-            continue  # "No newline at end of file" markers
+            continue
         content = line[1:].strip() if line and line[0] in "+-" else line.strip()
         m = re.match(r"(?:async\s+)?def\s+([a-zA-Z_]\w*)\s*[\(:]", content)
         if m:
@@ -186,7 +188,6 @@ def extract_symbols_from_diff_text(diff_patch: str) -> List[str]:
         m = re.match(r"class\s+([a-zA-Z_]\w*)\s*[:(]", content)
         if m:
             symbols.append(m.group(1))
-    # deduplicate, preserve order
     seen: set = set()
     deduped = []
     for s in symbols:
@@ -207,7 +208,6 @@ def extract_changed_symbols(diff_patch: str, file_path: str) -> List[str]:
 
     for line in diff_patch.split("\n"):
         if line.startswith("@@"):
-            # Parse @@ -old +new @@ header
             try:
                 parts = line.split("+")[1].split("@@")[0].strip()
                 start = int(parts.split(",")[0])
@@ -219,11 +219,9 @@ def extract_changed_symbols(diff_patch: str, file_path: str) -> List[str]:
             current_new_line += 1
         elif line.startswith("-") and not line.startswith("---"):
             changed_lines.add(current_new_line)
-            # Don't advance new line counter
         else:
             current_new_line += 1
 
-    # Extract symbols from the actual file and filter to those touching changed lines
     symbols = extract_symbols_from_file(file_path)
     touched = []
     for sym in symbols:
@@ -231,4 +229,4 @@ def extract_changed_symbols(diff_patch: str, file_path: str) -> List[str]:
         if sym_lines & changed_lines:
             touched.append(sym.name)
 
-    return touched if touched else [s.name for s in symbols]  # fallback: all
+    return touched if touched else [s.name for s in symbols]
