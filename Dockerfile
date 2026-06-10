@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11.8-slim
 
 WORKDIR /app
 
@@ -10,4 +10,5 @@ WORKDIR /app/backend
 
 EXPOSE 8000
 
+ENV PYTHONPATH=/app/backend
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

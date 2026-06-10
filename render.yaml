@@ -1,12 +1,11 @@
 services:
   - type: web
     name: docanchor
-    env: docker
+    env: python
     region: oregon
     plan: free
-    dockerfilePath: ./Dockerfile
-    buildCommand: ""
-    startCommand: ""
+    buildCommand: ./build.sh
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: USE_MOCKS
         value: "true"
