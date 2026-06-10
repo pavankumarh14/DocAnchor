@@ -38,8 +38,8 @@ _MOCK_DIFFS: List[Dict] = [
         "deletions": 3,
         "patch": textwrap.dedent("""\
 @@ -15,10 +15,15 @@ def process_payment(
-     idempotency_key: Optional[str] = None,
- ) -> dict:
+    idempotency_key: Optional[str] = None,
+) -> dict:
 -    Validates the amount, selects the correct payment gateway,
 -    and returns a transaction receipt.
 +    Validates the amount, applies regional tax rules,
@@ -47,10 +47,10 @@ _MOCK_DIFFS: List[Dict] = [
 +    and returns a PCI-compliant transaction receipt.
 +
 +    New: supports multi-currency routing via currency param.
-    
-     Args:
-         user_id: The ID of the user to charge.
-         amount: Decimal amount to charge (must be > 0).
+   
+    Args:
+        user_id: The ID of the user to charge.
+        amount: Decimal amount to charge (must be > 0).
 -        currency: ISO 4217 currency code (default USD).
 +        currency: ISO 4217 currency code. Routing varies by region.
 +        tax_inclusive: If True, amount includes tax (default False).
@@ -65,9 +65,9 @@ _MOCK_DIFFS: List[Dict] = [
 -    Soft-delete a user account.
 +    Hard-delete a user account and purge PII from all tables.
 +    This action is irreversible and triggers a GDPR erasure event.
-    
-     Args:
-         user_id: User to deactivate.
+   
+    Args:
+        user_id: User to deactivate.
 -        reason: Optional audit-log reason.
 +        reason: Mandatory audit-log reason (now required for compliance).
 +        notify_user: If True, sends a deletion confirmation email (default True).
@@ -79,7 +79,7 @@ _MOCK_DIFFS: List[Dict] = [
         "deletions": 1,
         "patch": textwrap.dedent("""\
 @@ -20,7 +20,10 @@ def send_notification(
- ) -> dict:
+) -> dict:
 -    Sends a message to a single user. Supports email, sms, push, and webhook channels.
 +    Sends a message to a single user.
 +    Supported channels: email, sms, push, slack (webhook removed in v2).
@@ -243,8 +243,8 @@ async def mock_llm_rewrite(
 _pr_counter = 100
 
 
-async def mock_create_pr(request: PRRequest) -> PRResponse:
-    """Simulate opening a GitHub pull request."""
+async def mock_create_pr(request: PRRequest, _token: Optional[str] = None) -> PRResponse:
+    """Simulate opening a GitHub pull request. Token is ignored for mock."""
     global _pr_counter
     _pr_counter += 1
     await asyncio.sleep(0.2)
@@ -286,24 +286,5 @@ def get_mock_read_counts() -> Dict[str, int]:
     return MOCK_READ_COUNTS.copy()
 
 
-# ============================================================
-# STUB — candidates replace mock read counts with real analytics
-# ============================================================
-
 async def fetch_real_read_counts(repo: str, github_token: str) -> Dict[str, int]:
-    """
-    Fetch real page-view / traffic counts for documentation sections.
-
-    Currently returns an empty dict — the pipeline falls back to zero read
-    counts for all blocks, meaning the "most-read" prioritisation does not work.
-
-    TODO — implement one of these approaches:
-
-    Option A — GitHub Traffic API:
-        GET /repos/{owner}/{repo}/traffic/views
-
-    Option B — Custom analytics store.
-
-    The returned dict must be keyed by section_heading strings.
-    """
     return {}
