@@ -27,11 +27,7 @@ app.include_router(router, prefix="/api")
 # Serve frontend static files
 FRONTEND_DIST = "/app/frontend/dist"
 if os.path.exists(FRONTEND_DIST):
-    app.mount("/static", StaticFiles(directory=FRONTEND_DIST), name="static")
-    
-    @app.get("/")
-    async def serve_frontend():
-        return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
+    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
 
 @app.get("/health")
 async def health():
