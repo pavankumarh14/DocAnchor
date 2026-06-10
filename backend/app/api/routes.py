@@ -46,10 +46,6 @@ async def receive_webhook(
     body: WebhookRequest,
     background_tasks: BackgroundTasks,
 ):
-    """
-    Trigger a DocAnchor analysis run against the local sample repo.
-    Accepts either a mock commit index (0-3) or a custom patch + path.
-    """
     api_key = body.llm_api_key.strip() if body.llm_api_key else None
     github_token = body.github_token.strip() if body.github_token else None
 
@@ -96,19 +92,14 @@ async def receive_webhook(
 
 
 # ---------------------------------------------------------------------------
-# STUB — Real GitHub push-event webhook (implement)
+# Real GitHub push-event webhook
 # ---------------------------------------------------------------------------
 
 class GitHubPushEvent(BaseModel):
-    """
-    Minimal schema for a GitHub push webhook payload.
-    GitHub sends this when code is pushed to any branch.
-    Reference: https://docs.github.com/en/webhooks/webhook-events-and-payloads#push
-    """
-    ref: str                          # e.g. "refs/heads/main"
-    repository: dict                  # contains full_name, default_branch, etc.
-    commits: list = []                # list of commit objects with id, message, author
-    sender: dict = {}                 # GitHub user who triggered the push
+    ref: str
+    repository: dict
+    commits: list = []
+    sender: dict = {}
     head_commit: Optional[dict] = None
 
 
@@ -118,13 +109,8 @@ async def receive_push_webhook(
     body: GitHubPushEvent,
     background_tasks: BackgroundTasks,
 ):
-    """
-    Receive a real GitHub push event and trigger analysis automatically.
-    """
     signature = request.headers.get("X-Hub-Signature-256", "")
     if settings.WEBHOOK_SECRET:
-        import hmac
-        import hashlib
         payload_bytes = await request.body()
         expected = hmac.new(
             settings.WEBHOOK_SECRET.encode(),
@@ -166,14 +152,13 @@ async def receive_push_webhook(
 # ---------------------------------------------------------------------------
 
 class GithubCommitsRequest(BaseModel):
-    repo: str           # "owner/repo"
+    repo: str
     github_token: str
     limit: int = 5
 
 
 @router.post("/github/commits", summary="Fetch recent commits from a real GitHub repo")
 async def list_github_commits(body: GithubCommitsRequest):
-    """Return the last N commits from a GitHub repo (sha, author, message)."""
     from app.services.github_fetcher import fetch_repo_commits
     try:
         commits = await fetch_repo_commits(
@@ -187,8 +172,8 @@ async def list_github_commits(body: GithubCommitsRequest):
 
 
 class RepoAnalysisRequest(BaseModel):
-    repo: str           # "owner/repo"
-    sha: str            # full or short commit SHA
+    repo: str
+    sha: str
     github_token: str
     llm_api_key: Optional[str] = None
 
@@ -198,10 +183,6 @@ async def analyze_repo_commit(
     body: RepoAnalysisRequest,
     background_tasks: BackgroundTasks,
 ):
-    """
-    Fetch the commit diff and repo markdown files from GitHub, then run the
-    full DocAnchor pipeline (symbol extraction → drift scoring → LLM rewrite → PR preview).
-    """
     from app.services.github_fetcher import build_commit_payload, fetch_markdown_files
 
     try:
@@ -244,7 +225,6 @@ class GithubValidateRequest(BaseModel):
 
 @router.post("/github/validate", summary="Validate a GitHub token")
 async def validate_github_token(body: GithubValidateRequest):
-    """Check if a GitHub personal access token is valid by calling GET /user."""
     token = body.token.strip()
     if not token:
         return {"connected": False, "login": None, "name": None, "scopes": None, "error": "No token provided"}
@@ -278,7 +258,7 @@ async def validate_github_token(body: GithubValidateRequest):
 # Job status polling
 # ---------------------------------------------------------------------------
 
-@router.get("/jobs/{job_id}", response_model=AnalysisJob, summary="Poll job status")
+@router.get("/jobs/{job_id}", summary="Poll job status")
 async def get_job_status(job_id: str):
     job = get_job(job_id)
     if not job:
@@ -286,23 +266,33 @@ async def get_job_status(job_id: str):
     return job
 
 
-@router.get("/jobs", response_model=List[AnalysisJob], summary="List all jobs")
+@router.get("/jobs", summary="List all jobs")
 async def list_all_jobs():
     return list_jobs()
 
 
 # ---------------------------------------------------------------------------
-# Dashboard data
+# Dashboard data with release notes
 # ---------------------------------------------------------------------------
 
-@router.get("/dashboard/{job_id}", response_model=DashboardMetrics, summary="Get dashboard metrics")
+@router.get("/dashboard/{job_id}", summary="Get dashboard metrics including release notes")
 async def get_dashboard(job_id: str):
     job = get_job(job_id)
     if not job:
         raise HTTPException(404, f"Job {job_id!r} not found")
     if job.status != JobStatus.DONE:
         raise HTTPException(409, f"Job {job_id!r} is {job.status} – wait for DONE")
-    return job.result
+    
+    from app.services.drift_scorer import generate_release_notes
+    release_notes = generate_release_notes(
+        job.result.drift_results,
+        [c.message for c in job.result.recent_commits]
+    )
+    
+    return {
+        **job.result.model_dump(),
+        "release_notes": release_notes,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -332,17 +332,6 @@ export const Dashboard: React.FC = () => {
               {sortedResults.length === 0 ? <div className="text-center py-12 text-white/25 text-sm">No blocks above this threshold — docs look fresh!</div> : sortedResults.map((result, i) => (<DriftCard key={result.doc_block_id} result={result} rank={i + 1} repo={health.repo} />))}
             </div>
 
-             {metrics.release_notes && (
-               <div className="rounded-xl border border-white/8 bg-white/2 p-5 space-y-3">
-                 <p className="text-xs uppercase tracking-widest text-white/30 flex items-center gap-1.5">
-                   <FileText size={12} /> Release Notes
-                 </p>
-                 <pre className="text-xs text-white/60 font-mono whitespace-pre-wrap bg-white/3 p-4 rounded-lg max-h-60 overflow-y-auto">
-                   {metrics.release_notes}
-                 </pre>
-               </div>
-             )}
-
             <p className="text-center text-xs text-white/20 pb-4">Last analyzed {new Date(health.last_analyzed).toLocaleTimeString()} · {health.repo}</p>
           </div>
         )}

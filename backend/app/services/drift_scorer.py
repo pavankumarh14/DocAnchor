@@ -127,3 +127,24 @@ def generate_changelog(drift_results: List[DriftResult], commit_messages: List[s
 
     lines.append(f"\n**Total sections updated:** {len(stale)}")
     return "\n".join(lines)
+
+
+def generate_release_notes(drift_results: List[DriftResult], commit_messages: List[str]) -> str:
+    """Generate a release notes format changelog."""
+    if not drift_results:
+        return "No changes to release notes."
+
+    stale = [r for r in drift_results if r.drift_score > 30]
+    if not stale:
+        return "No documentation changes requiring release notes."
+
+    lines = ["## Documentation Changes\n"]
+    
+    for r in stale:
+        for sym in r.changed_symbols:
+            lines.append(f"- Updated `{sym}` documentation")
+            if r.suggested_rewrite:
+                preview = r.suggested_rewrite.split("\n")[0][:60]
+                lines.append(f"  > {preview.strip()}")
+
+    return "\n".join(lines) if len(lines) > 1 else "No documentation changes."

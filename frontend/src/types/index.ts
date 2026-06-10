@@ -58,6 +58,7 @@ export interface DashboardMetrics {
   repo_health: RepoHealth;
   drift_results: DriftResult[];
   recent_commits: CommitPayload[];
+  release_notes?: string;
 }
 
 export type JobStatus = 'pending' | 'running' | 'done' | 'failed';

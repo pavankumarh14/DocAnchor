@@ -16,23 +16,15 @@ from app.models.schemas import DriftResult, RepoHealth
 
 logger = logging.getLogger(__name__)
 
-# Thresholds — tune these in production
-DRIFT_ALERT_THRESHOLD = 60       # drift_score above which we alert
-READ_COUNT_ALERT_THRESHOLD = 500  # only alert for high-traffic doc sections
+DRIFT_ALERT_THRESHOLD = 30
+READ_COUNT_ALERT_THRESHOLD = 0
 
 
 async def notify_drift_detected(
     repo_health: RepoHealth,
     stale_results: List[DriftResult],
-    channel: str = "slack",  # "slack" | "teams" | "both"
+    channel: str = "slack",
 ) -> None:
-    """
-    Send a notification for every high-traffic stale doc block.
-
-    Filters stale_results to blocks where:
-      - drift_score   > DRIFT_ALERT_THRESHOLD
-      - read_count    > READ_COUNT_ALERT_THRESHOLD
-    """
     for result in stale_results:
         if result.drift_score <= DRIFT_ALERT_THRESHOLD:
             continue
@@ -50,8 +42,46 @@ async def notify_drift_detected(
                     logger.warning("Failed to send Slack notification for %s", result.doc_path)
 
 
+async def notify_release_notes(
+    repo: str,
+    release_notes: str,
+    drift_count: int,
+) -> None:
+    """Send release notes to Slack as a formatted message."""
+    if not settings.SLACK_WEBHOOK_URL:
+        return
+    
+    message = {
+        "text": f"DocAnchor Release Notes: {drift_count} doc blocks updated in {repo}",
+        "blocks": [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": f":memo: Documentation Update: {drift_count} sections updated",
+                },
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Repository:* `{repo}`\n*Updated sections:* {drift_count}",
+                },
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"```\n{release_notes[:2000]}\n```",
+                },
+            },
+        ],
+    }
+    
+    await send_slack_message(settings.SLACK_WEBHOOK_URL, message)
+
+
 async def send_slack_message(webhook_url: str, message: dict) -> bool:
-    """POST a Block Kit message payload to a Slack incoming webhook URL."""
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(webhook_url, json=message)
@@ -62,7 +92,6 @@ async def send_slack_message(webhook_url: str, message: dict) -> bool:
 
 
 def _format_slack_message(repo: str, result: DriftResult) -> dict:
-    """Build a Slack Block Kit payload for a single stale doc block."""
     return {
         "text": f"DocAnchor alert: stale docs in {repo}",
         "blocks": [
@@ -86,7 +115,6 @@ def _format_slack_message(repo: str, result: DriftResult) -> dict:
 
 
 async def send_teams_message(webhook_url: str, message: dict) -> bool:
-    """POST an Adaptive Card payload to a Microsoft Teams incoming webhook."""
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(webhook_url, json=message)
@@ -97,7 +125,6 @@ async def send_teams_message(webhook_url: str, message: dict) -> bool:
 
 
 def _format_teams_message(repo: str, result: DriftResult) -> dict:
-    """Build a Microsoft Teams Adaptive Card payload for a stale doc block."""
     return {
         "type": "message",
         "attachments": [

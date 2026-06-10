@@ -1,11 +1,11 @@
 """
 Main analysis worker.
 Orchestrates the full DocAnchor pipeline:
-  1. Parse changed symbols from diff (real tree-sitter, or diff-text fallback)
-  2. Load + index doc blocks (real Qdrant + embeddings)
-  3. Score drift (real algorithm)
-  4. Request LLM rewrites (mock or real)
-  5. Open doc PR (real or local preview)
+  1. Parse changed symbols from diff
+  2. Load + index doc blocks
+  3. Score drift
+  4. Request LLM rewrites
+  5. Open doc PR
   6. Auto-merge if conditions met
   7. Send notifications if needed
   8. Return DashboardMetrics
@@ -40,9 +40,9 @@ from app.services.symbol_extractor import (
 )
 from app.services.doc_parser import parse_all_docs, parse_docs_from_dict
 from app.services.vector_index import index_doc_blocks, build_symbol_doc_map
-from app.services.drift_scorer import score_all_blocks, compute_repo_freshness
+from app.services.drift_scorer import score_all_blocks, compute_repo_freshness, generate_changelog
 from app.services.auto_merge import score_rewrite_confidence, should_auto_merge, merge_pr
-from app.services.notifier import notify_drift_detected
+from app.services.notifier import notify_drift_detected, notify_release_notes
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,6 @@ DB_PATH = "data/jobs.db"
 
 
 def _init_db() -> sqlite3.Connection:
-    """Initialize SQLite database for job persistence."""
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
@@ -74,7 +73,6 @@ def _get_db() -> sqlite3.Connection:
 
 
 def _build_doc_diff(doc_path: str, original: str, revised: str) -> Tuple[str, int, int]:
-    """Unified diff for one doc section (local PR preview, not GitHub)."""
     diff_lines = list(
         difflib.unified_diff(
             original.splitlines(),
@@ -97,7 +95,6 @@ def _build_doc_diff(doc_path: str, original: str, revised: str) -> Tuple[str, in
 
 
 def get_job(job_id: str) -> Optional[AnalysisJob]:
-    """Load a job by ID from SQLite."""
     try:
         conn = _get_db()
         cursor = conn.execute("SELECT data FROM jobs WHERE id = ?", (job_id,))
@@ -111,7 +108,6 @@ def get_job(job_id: str) -> Optional[AnalysisJob]:
 
 
 def list_jobs() -> List[AnalysisJob]:
-    """Return all jobs newest-first from SQLite."""
     try:
         conn = _get_db()
         cursor = conn.execute("SELECT data FROM jobs ORDER BY created_at DESC")
@@ -122,7 +118,6 @@ def list_jobs() -> List[AnalysisJob]:
 
 
 def _save_job(job: AnalysisJob) -> None:
-    """Persist a job to SQLite."""
     try:
         conn = _get_db()
         conn.execute(
@@ -141,7 +136,6 @@ async def run_analysis(
     github_token: Optional[str] = None,
     markdown_docs: Optional[Dict[str, str]] = None,
 ) -> None:
-    """Run the full DocAnchor pipeline for a commit."""
     job.status = JobStatus.RUNNING
     _save_job(job)
     is_real_repo = markdown_docs is not None
@@ -338,6 +332,9 @@ async def run_analysis(
         if settings.SLACK_WEBHOOK_URL and stale_count > 0:
             try:
                 await notify_drift_detected(repo_health, drift_results)
+                release_notes = generate_changelog(drift_results, [commit.message])
+                await notify_release_notes(commit.repo, release_notes, stale_count)
+                logger.info("Slack notifications sent")
             except Exception as exc:
                 logger.warning("Notification failed: %s", exc)
 
